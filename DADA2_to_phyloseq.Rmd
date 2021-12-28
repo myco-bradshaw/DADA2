@@ -1,0 +1,321 @@
+---
+title: "Dada2_Unite_Taxa_Assignment"
+author: "Alex"
+date: "11/7/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+Loads the dada2 pipline and give version number installed in R
+
+```{r Libraries}
+library(dada2)
+packageVersion("dada2")
+library(ShortRead)
+packageVersion("ShortRead")
+library(Biostrings)
+packageVersion("Biostrings")
+library(phyloseq)
+packageVersion("phyloseq")
+rm(list = ls())
+```
+
+Dada2, set working path, sort, filter bad reads, and generate read values for each sample
+
+```{r DADA2, echo=FALSE}
+
+#This script processes raw sequencing reads using the packages DADA2 and creates a phyloseq object for down stream analysis. This is a single object which can be seperated out into all the community components if needed, or passed of to phloseq or vegan for direct analysis
+
+
+#Defines the path where your data is 
+# "change/to/directory/with/fastq/files" 
+
+path <-"C:/path/to/raw/reads"  
+
+list.files(path)
+
+
+
+#Lists all the files that are contained in the directory your data is in, use this to ensure the pipline is reading the correct files
+
+list.files("C:/path/to/raw/reads")
+
+#sorts and defines the forward reads from data (most likely R1 reads after demultiplexing)
+
+fnFs <- sort(list.files("C:/path/to/raw/reads", pattern="_R1.fastq", full.names = TRUE))
+
+#sanity check, put this in after sorting each time to ensure that a list or sorted files is given back, if "character(0)" is given back it means that the sorting did not work
+
+fnFs
+
+#sorts and defines the reverse reads from data (most likely R2 reads after demultiplexing)
+
+fnRs <- sort(list.files("C:/path/to/raw/reads", pattern="_R2.fastq", full.names = TRUE))
+
+
+#sanity check, put this in after sorting each time to ensure that a list or sorted files is given back, if "character(0)" is given back it means that the sorting did not work
+
+fnRs
+
+#extract sample names bassed off given format alter "" to adjust sample names
+
+sample.names <- sapply(strsplit(basename(fnFs), "you/pattern"), `[`, 1)
+
+#make sure sample names make sense
+sample.names
+
+#generates read quality plots for forward sequences, change numbers in brackets to look at different samples
+
+plotQualityProfile(fnFs[1:2])
+
+#place filtered forward read files in sudirectory
+
+filtFs <- file.path("C:/path/to/raw/reads", "name/of/folder", paste0(sample.names, "_F_filt.fastq.gz"))
+
+#sanity check, put this in after sorting each time to ensure that a list or sorted files is given back, if "character(0)" is given back it means that the sorting did not work
+
+filtFs
+
+#place filtered reverse read files in sudirectory
+
+filtRs <- file.path("C:/path/to/raw/reads", "name/of/folder", paste0(sample.names, "_R_filt.fastq.gz"))
+
+#sanity check, put this in after sorting each time to ensure that a list or sorted files is given back, if "character(0)" is given back it means that the sorting did not work
+
+filtRs
+
+
+#filters and puts out a list of read values for files, if on windows multithread=FALSE, mac multithread=TRUE, maxEE values can be increased or decreased to pass or fail reads (lower= more stringent, higher= less stringent, 2,2 = standard) 
+#use minLen = 50 to get rid of really small seuqnces
+
+
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(0,0),
+              maxN=0, maxEE=c(2,2), truncQ=2, minLen = 50, rm.phix=TRUE,
+              compress=TRUE, multithread=FALSE) 
+head(out)
+
+
+```
+
+## This section takes all the reads that passed and processes the data to be more manageable, merges the paired end reads, and writes tables for use in taxa identification for each sample.
+
+```{r, DADA2, echo=FALSE}
+
+# If reads dont pass filtering, DADA will error out looking for files that do not exist when learning the error rates for the data set, this step tell R to only look for files from the input that actually exist.
+
+exists <- file.exists(filtFs) & file.exists(filtRs)
+filtFs <- filtFs[exists]
+filtRs <- filtRs[exists]
+
+
+#allows dada algorithem to learn the errors for the data set, every data set is different (forward reads)
+errF <- learnErrors(filtFs, multithread=TRUE)
+
+#allows dada algorithem to learn the errors for the data set, every data set is different (reverse reads)
+
+errR <- learnErrors(filtRs, multithread=TRUE)
+
+#sanity check, visualization of estimated error rate
+
+plotErrors(errF, nominalQ=TRUE)
+
+#dereplication of sequences, combines identical sequence reads into unique sequences
+
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+
+#dereplication of sequences, combines identical sequence reads into unique sequences
+
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+
+#names the dereplicated sequences by sample names
+
+names(derepFs) <- sample.names[exists]
+
+#run core sample inference algorithm, tells you how many reads and unique sequences in each sample (forward reads)
+
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+
+#run core sample inference algorithm, tells you how many reads and unique sequences in each sample (Reverse reads)
+
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+
+#inspect dada class object, tells you how many true sequences are in the unique sequences, change number in brackets to look at different samples (this is for forward, you can change to dadaRs for reverse)
+dadaFs[[1]]
+
+#merges your pair end reads
+
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+
+#shows pair end reads from sample number in backets
+
+head(mergers[[1]])
+
+#creates ASV table 
+
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+#inspect distrubution of sequence lengths 
+
+table(nchar(getSequences(seqtab)))
+
+#remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+
+#track reads through pipeline
+
+sum(seqtab.nochim)/sum(seqtab)
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+
+```
+
+##This section 
+```{r, DADA2, echo=FALSE}
+#assigns taxa to genus level, tryRC=TRUE command can be added or removed, if this commands does not assign taxa correctly it could be that the database is read opposite of your data, in which case tryRC=TRUE tries the reverse compliment to assign taxa
+
+taxa <- assignTaxonomy(seqtab.nochim, "C:/path/to/datbase.fasta", multithread=TRUE, tryRC=TRUE, verbose=TRUE)
+
+#Can add species to the taxa from the database, this command is not needed for the Fungal UNITE database and should be commented out if used.
+
+#taxa <- addSpecies(taxa, "directory/to/database/file/database")
+
+
+
+#prints out some data to show if taxa assignment worked
+
+taxa.print <- taxa
+rownames(taxa.print) <- NULL
+head(taxa.print)
+
+
+#define where your ASV sequences are and what the headers are, here ASV hearder are the actual ASV sequence
+asv_seqs <- colnames(seqtab.nochim)
+asv_headers <- vector(dim(seqtab.nochim)[2], mode="character")
+
+
+
+#changes sequence headers more manageable names (ex, ASV_1, ASV_2, ect) If you are planning to merge this data set with another run then DO NOT DO THIS, other wise you could have overlap of ASV labels and merging data sets will not work properly. 
+for (i in 1:dim(seqtab.nochim)[2]) {
+  asv_headers[i] <- paste(">ASV", i, sep="_")
+}
+
+
+#making and writing out a fasta file of final ASV seqs, change "preferred table name"
+
+asv_fasta <- c(rbind(asv_headers, asv_seqs))
+write(asv_fasta, "batch1_ASV.fa")
+
+#write out a sample ASV count table, change "preferred table name"
+
+asv_tab <- t(seqtab.nochim)
+row.names(asv_tab) <- sub(">", "", asv_headers)
+write.table(asv_tab, "batch1_ASV_counts.csv", sep="/t", quote=F)
+
+#write out a sample taxa table
+
+asv_tax <- taxa
+row.names(asv_tax) <- sub(">", "", asv_headers)
+write.table(asv_tax, "batch1_ASVs_taxonomy.csv", sep="/t", quote=F)
+
+```
+
+
+
+
+
+```{r}
+#this defines the location of the meta data file for you samples, used for handoff to phyloseq
+DATA <- read.csv("C:/path/to/metadata.csv", row.names = 1)
+
+
+
+#this part takes all the DADA2 outputs and hands them off to phyloseq to generate a phyloseq object for further data analysis
+
+
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(SCAT_DATA), 
+               tax_table(taxa))
+
+ps
+
+# Remove mock sample if ther is one in your data set
+#ps <- prune_samples(sample_names(ps) != "MOCK", ps) 
+
+#This section adds the sequences of each ASV to the phyloseq object
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+
+
+#save your phyloseq to be loaded later so you don't have to re-do this whole process again later.
+saveRDS(ps, "C:/path/to/name.phyloseq.rds")
+
+#your phyloseq object can now be loaded into a new sesion for further analysis
+
+
+```
+
+```{r}
+#use the commands if you wish to generate a phylogenetic tree from you sequences, Usefully for statistics like PCOA and community analysis between samples
+
+library("ape")
+library("phangorn")
+library("MiscMetabar")
+
+#make tree for rhizopogon
+refseq <- refseq(rhizo.only)
+refseq
+
+#make phylogenetic tree with phaghorn
+names(refseq) <- taxa_names(ps) # This propagates to the tip labels of the tree
+
+mult <- msa(refseq, method="ClustalW", type="dna", order="input")
+phang.align <- as.phyDat(mult, type="DNA", names=getSequence(refseq))
+dm <- dist.ml(phang.align)
+treeNJ <- NJ(dm) # Note, tip order != sequence order
+fit = pml(treeNJ, data=phang.align)
+
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+ rearrangement = "stochastic", control = pml.control(trace = 0))
+
+phytree <- phy_tree(fitGTR$tree)
+phytree
+
+#check that names match to merge
+taxa_names(ps)
+taxa_names(phytree)
+
+#merge tree with phyloseq object
+ps.with.phytree <- merge_phyloseq(ps, phytree)
+ps.with.phytree
+
+
+#save your phyloseq to be loaded later so you don't have to re-do this whole process again later.
+saveRDS(ps.with.phytree, "C:/path/to/name.phyloseq.rds")
+
+
+#your phyloseq object can now be loaded into a new sesion for further analysis
+
+
+
+
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
